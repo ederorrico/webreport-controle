@@ -1,0 +1,50 @@
+name: Mudar o nivel do WebReport
+# Rode por: Actions > "Mudar o nivel do WebReport" > Run workflow. Escolha o nivel e (se quiser) a mensagem.
+# O arquivo controle.json e assinado aqui com a chave privada guardada em Settings > Secrets (CONTROLE_CHAVE_PRIVADA).
+on:
+  workflow_dispatch:
+    inputs:
+      nivel:
+        description: "normal / aviso (faixa) / somente-leitura (ninguem grava) / bloqueio (ninguem usa)"
+        type: choice
+        options: [normal, aviso, somente-leitura, bloqueio]
+        default: normal
+      mensagem:
+        description: "Mensagem que aparece para os usuarios (opcional)"
+        type: string
+        required: false
+      servidores:
+        description: "Servidores autorizados: impressoes separadas por virgula (vazio = qualquer servidor)"
+        type: string
+        required: false
+permissions:
+  contents: write
+concurrency: controle
+jobs:
+  assinar:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Montar e assinar o controle.json
+        env:
+          CHAVE: ${{ secrets.CONTROLE_CHAVE_PRIVADA }}
+          NIVEL: ${{ inputs.nivel }}
+          MSG: ${{ inputs.mensagem }}
+          SERV: ${{ inputs.servidores }}
+        run: |
+          set -e
+          [ -n "$CHAVE" ] || { echo "Falta o segredo CONTROLE_CHAVE_PRIVADA"; exit 1; }
+          python3 -c "import json,os,datetime;serv=[s.strip() for s in os.environ.get('SERV','').split(',') if s.strip()];p={'versao':1,'nivel':os.environ['NIVEL'],'mensagem':(os.environ.get('MSG') or None),'emitidoEm':datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),'servidores':serv};open('dados.json','w',encoding='utf-8').write(json.dumps(p,ensure_ascii=False))"
+          umask 077; printf '%s\n' "$CHAVE" > /tmp/k.pem
+          openssl dgst -sha256 -sign /tmp/k.pem -out sig.der dados.json
+          rm -f /tmp/k.pem
+          python3 -c "import json,base64;d=open('dados.json','rb').read();s=open('sig.der','rb').read();open('controle.json','w').write(json.dumps({'dados':base64.b64encode(d).decode(),'assinatura':base64.b64encode(s).decode()},indent=2)+'\n')"
+          echo "Novo conteudo:"; cat dados.json; echo
+          rm -f dados.json sig.der
+      - name: Gravar
+        run: |
+          git config user.name "webreport-controle"
+          git config user.email "actions@users.noreply.github.com"
+          git add controle.json
+          git commit -m "Nivel: ${{ inputs.nivel }}" || echo "sem mudanca"
+          git push
